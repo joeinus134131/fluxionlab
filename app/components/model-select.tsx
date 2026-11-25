@@ -3,15 +3,23 @@
 import { useState } from "react";
 import { CLAUDE_MODELS } from "@/lib/models";
 import type { PublicSettings } from "@/lib/settings";
-import { inputClass } from "../studio/studio";
+import { inputClass } from "../components/ui";
 
 const CHOICE_KEY = "fluxion.model";
 const DEFAULT_CHOICE = "claude:claude-opus-5-5";
 
+function readChoice() {
+  try {
+    return localStorage.getItem(CHOICE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /** Pilihan model AI, dipakai bersama oleh studio 3D dan desain PCB. Hanya untuk komponen yang dirender di browser. */
 export function useModelChoice(settings: PublicSettings | null) {
   // Pilihan model diingat di browser (hanya nama model, bukan kunci).
-  const [saved, setSaved] = useState(() => localStorage.getItem(CHOICE_KEY) ?? DEFAULT_CHOICE);
+  const [saved, setSaved] = useState(() => readChoice() ?? DEFAULT_CHOICE);
   const choices = [
     ...CLAUDE_MODELS.map((model) => ({ value: `claude:${model}`, label: model })),
     ...(settings?.connections ?? []).map((c) => ({ value: `compatible:${c.id}`, label: `${c.name} · ${c.model}` })),
@@ -26,7 +34,11 @@ export function useModelChoice(settings: PublicSettings | null) {
     missingKey: choice.startsWith("claude:") && settings !== null && !settings.claude.hasKey,
     select(value: string) {
       setSaved(value);
-      localStorage.setItem(CHOICE_KEY, value);
+      try {
+        localStorage.setItem(CHOICE_KEY, value);
+      } catch {
+        // Penyimpanan browser bisa diblokir; pilihan tetap berlaku untuk sesi ini.
+      }
     },
   };
 }

@@ -5,8 +5,8 @@ import { guard } from "@/lib/guard";
 import { MAX_BODY_BYTES, readText, respond } from "@/lib/http";
 import { MAX_OBJECTS, newObjectSchema, patchSchema, sceneInputSchema, type Operation } from "@/lib/scene";
 import { applyOperation, getState } from "@/lib/scene-store";
-import { boardSchema, checkBoard, componentSchema, FOOTPRINT_GUIDE, type BoardOperation } from "@/lib/pcb";
-import { routeBoard } from "@/lib/pcb-router";
+import { boardSchema, componentSchema, FOOTPRINT_GUIDE, type BoardOperation } from "@/lib/pcb";
+import { analyzeBoard } from "@/lib/pcb-analysis";
 import { applyBoardOperation, getBoardState } from "@/lib/pcb-store";
 
 export const dynamic = "force-dynamic";
@@ -31,12 +31,8 @@ const PCB_GUIDE =
 
 /** Papan beserta hasil cek dan routing, agar asisten bisa memperbaiki desainnya. */
 function report(state = getBoardState()) {
-  const routing = routeBoard(state.board);
-  return {
-    ...state,
-    issues: checkBoard(state.board),
-    unrouted: routing.unrouted.map(({ net, from, to }) => ({ net, from, to })),
-  };
+  const { issues, routing } = analyzeBoard(state.board);
+  return { ...state, issues, unrouted: routing.unrouted.map(({ net, from, to }) => ({ net, from, to })) };
 }
 
 function runBoard(operation: BoardOperation) {

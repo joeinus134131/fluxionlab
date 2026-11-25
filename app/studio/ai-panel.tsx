@@ -5,7 +5,7 @@ import type { SceneState } from "@/lib/scene";
 import type { PublicSettings } from "@/lib/settings";
 import { AttachmentBar, AttachmentZone, useAttachments } from "../components/attachments";
 import { ModelSelect, useModelChoice } from "../components/model-select";
-import { buttonClass, inputClass } from "./studio";
+import { buttonClass, inputClass } from "../components/ui";
 
 const EXAMPLES = [
   "Buat rumah kecil dengan atap, pintu, jendela, dan dua pohon",

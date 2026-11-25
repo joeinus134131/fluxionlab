@@ -244,10 +244,16 @@ async function withCompatible(
 async function readLimited(response: Response) {
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for await (const chunk of response.body ?? []) {
-    size += chunk.byteLength;
-    if (size > MAX_REPLY_BYTES) throw new AiError("Balasan penyedia model terlalu besar.");
-    chunks.push(chunk);
+  const reader = response.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_REPLY_BYTES) {
+      await reader.cancel();
+      throw new AiError("Balasan penyedia model terlalu besar.");
+    }
+    chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
 }

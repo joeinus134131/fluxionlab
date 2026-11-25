@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Operation, Scene, SceneObject } from "@/lib/scene";
-import { buttonClass, inputClass } from "./studio";
+import { buttonClass, inputClass } from "../components/ui";
 
 type Props = {
   scene: Scene;
@@ -123,6 +123,21 @@ function Editor({ object, send }: { object: SceneObject; send: Props["send"] }) 
       ))}
       <div className="flex gap-2">
         <button className="flex-1 rounded-md bg-indigo-600 px-3 py-1.5 text-sm text-white">Terapkan</button>
+        <button
+          type="button"
+          className={buttonClass}
+          onClick={() => {
+            const { id, ...copy } = object;
+            void id;
+            const [x, y, z] = copy.position;
+            send({
+              op: "add",
+              objects: [{ ...copy, name: `${copy.name} salinan`.slice(0, 80), position: [Math.min(1000, x + 1), y, z] }],
+            });
+          }}
+        >
+          Duplikat
+        </button>
         <button type="button" className={buttonClass} onClick={() => send({ op: "remove", ids: [object.id] })}>
           Hapus
         </button>

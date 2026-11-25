@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import { buttonClass } from "./studio";
+import { buttonClass } from "../components/ui";
 
 function Snippet({ title, code }: { title: string; code: string }) {
   const [copied, setCopied] = useState(false);
@@ -55,7 +55,8 @@ export function ConnectPanel() {
       <p className="text-xs opacity-60">
         Konfigurasi Claude Desktop memakai mcp-remote, paket npm pihak ketiga yang diunduh saat dijalankan.
       </p>
-      <p className="text-sm opacity-70">Tool MCP: get_scene, set_scene, add_objects, update_object, remove_objects, undo.</p>
+      <p className="text-sm opacity-70">Tool MCP: get_scene, set_scene, add_objects, update_object, remove_objects, undo, redo. Untuk PCB: get_board, set_board,
+        move_component, remove_component, undo_board, redo_board.</p>
       <Snippet title="REST API: baca scene" code={`curl ${origin}/api/scene`} />
       <Snippet
         title="REST API: tambah objek"

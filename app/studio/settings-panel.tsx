@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { PublicSettings, SettingsOperation } from "@/lib/settings";
-import { buttonClass, inputClass } from "./studio";
+import { buttonClass, inputClass, primaryClass } from "../components/ui";
 
 // Preset hanya mengisi alamat; nama model diisi sendiri sesuai akun Anda.
 const PRESETS = [
@@ -12,7 +12,6 @@ const PRESETS = [
 ];
 
 const EMPTY = { id: "", name: "", baseUrl: "", model: "", apiKey: "" };
-const primaryClass = "rounded-md bg-indigo-600 px-3 py-1.5 text-sm text-white disabled:opacity-40";
 
 type Props = { settings: PublicSettings | null; onChange: (settings: PublicSettings) => void };
 

@@ -1,5 +1,6 @@
-import { courtyard, placedPads, type Board, type PlacedPad } from "./pcb";
-import { VIA_DRILL, VIA_SIZE, type Point, type Routing } from "./pcb-router";
+import { placedPads, type Board, type PlacedPad } from "./pcb";
+import { CLEARANCE, EDGE_CLEARANCE, VIA_DRILL, VIA_SIZE, type Point, type Routing } from "./pcb-router";
+import { PIN1_DOT, silkscreen, SILK_WIDTH } from "./pcb-silk";
 
 // Berkas produksi: Gerber RS-274X, bor Excellon, BOM, dan posisi komponen.
 // Gerber memakai Y ke atas, jadi sumbu Y dibalik terhadap tampilan.
@@ -34,6 +35,7 @@ function gerber(height: number, fileFunction: string) {
     },
     toString() {
       return [
+        "%TF.GenerationSoftware,FluxionLab,PCB,1.0*%",
         `%TF.FileFunction,${fileFunction}*%`,
         "%FSLAX46Y46*%",
         "%MOMM*%",
@@ -101,7 +103,7 @@ export function productionFiles(board: Board, routing: Routing): Record<string, 
 
   const copper = ([0, 1] as const).map((layer) => {
     const file = gerber(height, layer === 0 ? "Copper,L1,Top" : "Copper,L2,Bot");
-    for (const track of routing.tracks) if (track.layer === layer) file.line(track.points, board.trackWidth);
+    for (const track of routing.tracks) if (track.layer === layer) file.line(track.points, track.width);
     for (const pad of pads) {
       if (pad.plated && (layer === 0 || pad.drill > 0)) file.flash(pad, pad.w, pad.h, pad.round);
     }
@@ -120,9 +122,9 @@ export function productionFiles(board: Board, routing: Routing): Record<string, 
   });
 
   const silk = gerber(height, "Legend,Top");
-  for (const component of board.components) {
-    const box = courtyard(component);
-    silk.line(rectangle(box.x1, box.y1, box.x2, box.y2), 0.15);
+  for (const { outline: box, texts, pin1 } of silkscreen(board)) {
+    for (const line of [box, ...texts]) silk.line(line, SILK_WIDTH);
+    if (pin1) silk.flash(pin1, PIN1_DOT, PIN1_DOT, true);
   }
 
   const outline = gerber(height, "Profile,NP");
@@ -134,7 +136,24 @@ export function productionFiles(board: Board, routing: Routing): Record<string, 
   ];
   const unplated = pads.filter((p) => !p.plated).map((p) => ({ x: p.x, y: p.y, d: p.drill }));
 
+  const minimumDrill = Math.min(...plated.map((hole) => hole.d), VIA_DRILL);
+  const fabrication = [
+    `Proyek: ${board.name}`,
+    `Ukuran: ${width} x ${height} mm`,
+    "Lapisan: 2",
+    `Lebar jalur minimal: ${board.trackWidth} mm`,
+    `Jarak tembaga minimal: ${CLEARANCE} mm`,
+    `Jarak tembaga ke tepi: ${EDGE_CLEARANCE} mm`,
+    `Via: diameter ${VIA_SIZE} mm, bor ${VIA_DRILL} mm, tertutup solder mask`,
+    `Bor terkecil: ${minimumDrill} mm`,
+    "",
+    "Sebelum memesan: buka berkas di penampil Gerber, cocokkan pinout dengan datasheet,",
+    "dan jalankan pemeriksaan DFM pabrik.",
+    "",
+  ].join("\n");
+
   return {
+    "BACA-SAYA.txt": fabrication,
     "top-copper.gtl": copper[0],
     "bottom-copper.gbl": copper[1],
     "top-mask.gts": mask[0],

@@ -1,4 +1,4 @@
-import { placedPads, type Board, type PlacedPad } from "./pcb";
+import { netWidth, placedPads, type Board, type PlacedPad } from "./pcb";
 
 // Autorouter dua lapis berbasis grid (A*), dengan beberapa kali coba ulang.
 
@@ -8,53 +8,72 @@ export const VIA_SIZE = 0.8;
 export const VIA_DRILL = 0.4;
 const STEP = 0.25;
 // Cadangan untuk ruas diagonal di antara dua titik grid.
-const SLACK = 0.04;
+const SLACK = 0.05;
 const VIA_COST = 12;
 const MAX_PASSES = 4;
 const TIME_BUDGET_MS = 4000;
 
 export type Point = { x: number; y: number };
 /** layer 0 = atas, 1 = bawah. */
-export type Track = { net: string; layer: 0 | 1; points: Point[] };
+export type Track = { net: string; layer: 0 | 1; width: number; points: Point[] };
 export type Via = { net: string; x: number; y: number };
 export type Unrouted = { net: string; from: string; to: string; a: Point; b: Point };
-export type Routing = { tracks: Track[]; vias: Via[]; unrouted: Unrouted[] };
+export type Routing = {
+  tracks: Track[];
+  vias: Via[];
+  unrouted: Unrouted[];
+  /** true bila batas waktu habis sebelum semua sambungan dicoba. */
+  timedOut: boolean;
+};
 
-type NetJob = { name: string; id: number; pads: PlacedPad[] };
+type NetJob = { name: string; id: number; width: number; pads: PlacedPad[] };
 
 const FREE = 0;
 const BLOCKED = -1;
+
+/** Peta rintangan untuk satu lebar jalur: pemilik tiap sel per lapisan. */
+type Owners = [Int16Array, Int16Array];
 
 class Grid {
   readonly cols: number;
   readonly rows: number;
   readonly size: number;
-  /** Pemilik tiap sel per lapisan: kosong, id satu net, atau tertutup untuk semua. */
-  readonly owner: [Int16Array, Int16Array];
-  /** Sel yang tidak boleh diberi via (di sekitar pad). */
+  /** Satu peta per lebar. Peta selebar VIA_SIZE menentukan tempat via boleh dipasang. */
+  readonly maps = new Map<number, Owners>();
+  /** Sel yang tidak boleh diberi via (di sekitar pad dan via lain). */
   readonly noVia: Uint8Array;
+  // Penyangga pencarian dipakai ulang agar tidak mengalokasikan memori tiap sambungan.
+  readonly cost: Float32Array;
+  readonly parent: Int32Array;
+  readonly closed: Uint8Array;
 
-  constructor(board: Board) {
+  constructor(board: Board, widths: number[]) {
     this.cols = Math.floor(board.width / STEP) + 1;
     this.rows = Math.floor(board.height / STEP) + 1;
     this.size = this.cols * this.rows;
-    this.owner = [new Int16Array(this.size), new Int16Array(this.size)];
     this.noVia = new Uint8Array(this.size);
-    const edge = EDGE_CLEARANCE + board.trackWidth / 2;
-    for (let row = 0; row < this.rows; row++) {
-      for (let col = 0; col < this.cols; col++) {
-        const x = col * STEP;
-        const y = row * STEP;
-        if (x < edge || y < edge || x > board.width - edge || y > board.height - edge) {
-          const cell = row * this.cols + col;
-          this.owner[0][cell] = BLOCKED;
-          this.owner[1][cell] = BLOCKED;
+    this.cost = new Float32Array(this.size * 2);
+    this.parent = new Int32Array(this.size * 2);
+    this.closed = new Uint8Array(this.size * 2);
+    for (const width of new Set([...widths, VIA_SIZE])) {
+      const owners: Owners = [new Int16Array(this.size), new Int16Array(this.size)];
+      const edge = EDGE_CLEARANCE + width / 2;
+      for (let row = 0; row < this.rows; row++) {
+        for (let col = 0; col < this.cols; col++) {
+          const x = col * STEP;
+          const y = row * STEP;
+          if (x < edge || y < edge || x > board.width - edge || y > board.height - edge) {
+            const cell = row * this.cols + col;
+            owners[0][cell] = BLOCKED;
+            owners[1][cell] = BLOCKED;
+          }
         }
       }
+      this.maps.set(width, owners);
     }
   }
 
-  /** Kunjungi sel yang jaraknya ke persegi (atau titik/garis tipis) kurang dari radius. */
+  /** Kunjungi sel yang jaraknya ke persegi (atau titik) kurang dari radius. */
   around(cx: number, cy: number, halfW: number, halfH: number, radius: number, visit: (cell: number) => void) {
     const c1 = Math.max(0, Math.ceil((cx - halfW - radius) / STEP));
     const c2 = Math.min(this.cols - 1, Math.floor((cx + halfW + radius) / STEP));
@@ -69,37 +88,39 @@ class Grid {
     }
   }
 
-  claim(layer: 0 | 1, cell: number, net: number) {
-    const current = this.owner[layer][cell];
-    if (current === FREE) this.owner[layer][cell] = net;
-    else if (current !== net) this.owner[layer][cell] = BLOCKED;
+  /** Tandai tembaga milik `net` di semua peta. `extra` adalah jari-jari tembaganya sendiri. */
+  stamp(
+    layers: readonly (0 | 1)[],
+    x: number,
+    y: number,
+    halfW: number,
+    halfH: number,
+    extra: number,
+    net: number,
+  ) {
+    for (const [width, owners] of this.maps) {
+      this.around(x, y, halfW, halfH, extra + CLEARANCE + width / 2 + SLACK, (cell) => {
+        for (const layer of layers) {
+          const current = owners[layer][cell];
+          if (current === FREE) owners[layer][cell] = net;
+          else if (current !== net) owners[layer][cell] = BLOCKED;
+        }
+      });
+    }
   }
 
-  stampPad(pad: PlacedPad, net: number, trackWidth: number) {
-    const radius = CLEARANCE + trackWidth / 2 + SLACK;
+  stampPad(pad: PlacedPad, net: number) {
     // Bantalan bundar dianggap titik berjari-jari, selain itu persegi.
     const halfW = pad.round ? 0 : pad.w / 2;
     const halfH = pad.round ? 0 : pad.h / 2;
     const extra = pad.round ? pad.w / 2 : 0;
-    for (const layer of pad.drill > 0 ? ([0, 1] as const) : ([0] as const)) {
-      this.around(pad.x, pad.y, halfW, halfH, radius + extra, (cell) => this.claim(layer, cell, net));
-    }
-    const viaGap = VIA_SIZE / 2 + 0.05;
-    this.around(pad.x, pad.y, halfW, halfH, viaGap + extra, (cell) => (this.noVia[cell] = 1));
+    this.stamp(pad.drill > 0 ? [0, 1] : [0], pad.x, pad.y, halfW, halfH, extra, net);
+    this.around(pad.x, pad.y, halfW, halfH, VIA_SIZE / 2 + 0.05 + extra, (cell) => (this.noVia[cell] = 1));
   }
 
-  viaFits(cell: number, net: number, trackWidth: number) {
+  viaFits(cell: number, net: number) {
     if (this.noVia[cell]) return false;
-    const reach = Math.max(0, VIA_SIZE / 2 - trackWidth / 2);
-    const x = (cell % this.cols) * STEP;
-    const y = Math.floor(cell / this.cols) * STEP;
-    let fits = true;
-    this.around(x, y, 0, 0, reach + 0.01, (other) => {
-      for (const layer of this.owner) {
-        if (layer[other] !== FREE && layer[other] !== net) fits = false;
-      }
-    });
-    return fits;
+    return this.maps.get(VIA_SIZE)!.every((layer) => layer[cell] === FREE || layer[cell] === net);
   }
 }
 
@@ -156,20 +177,23 @@ const MOVES = [
 ] as const;
 
 /** Titik-titik di dalam pad yang boleh menjadi ujung jalur. Node = layer * size + sel. */
-function terminals(grid: Grid, pad: PlacedPad, net: number): number[] {
+function terminals(grid: Grid, pad: PlacedPad, net: number, width: number): number[] {
   const col = Math.round(pad.x / STEP);
   const row = Math.round(pad.y / STEP);
   if (col < 0 || row < 0 || col >= grid.cols || row >= grid.rows) return [];
   const cell = row * grid.cols + col;
   const layers = pad.drill > 0 ? [0, 1] : [0];
-  return layers.filter((l) => grid.owner[l][cell] === net).map((l) => l * grid.size + cell);
+  const owners = grid.maps.get(width)!;
+  return layers.filter((l) => owners[l][cell] === net).map((l) => l * grid.size + cell);
 }
 
-function search(grid: Grid, net: number, trackWidth: number, sources: Set<number>, targets: number[]) {
+function search(grid: Grid, net: number, width: number, sources: Set<number>, targets: number[], deadline: number) {
   const { size, cols, rows } = grid;
-  const cost = new Float32Array(size * 2).fill(Infinity);
-  const parent = new Int32Array(size * 2).fill(-1);
-  const closed = new Uint8Array(size * 2);
+  const owners = grid.maps.get(width)!;
+  const cost = grid.cost.fill(Infinity);
+  const parent = grid.parent.fill(-1);
+  const closed = grid.closed.fill(0);
+  let steps = 0;
   const goal = new Set(targets);
   const goalCol = targets[0] % size % cols;
   const goalRow = Math.floor((targets[0] % size) / cols);
@@ -193,6 +217,7 @@ function search(grid: Grid, net: number, trackWidth: number, sources: Set<number
   while (open.length > 0) {
     const node = open.pop();
     if (closed[node]) continue;
+    if (++steps % 4096 === 0 && Date.now() > deadline) return null;
     closed[node] = 1;
     if (goal.has(node)) {
       const path = [node];
@@ -209,28 +234,36 @@ function search(grid: Grid, net: number, trackWidth: number, sources: Set<number
       const r = row + dy;
       if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
       const other = r * cols + c;
-      const owner = grid.owner[layer][other];
+      const owner = owners[layer][other];
       if (owner !== FREE && owner !== net) continue;
       // Sedikit penalti belok agar jalur tidak zig-zag.
       const turned = previous >= 0 && node - previous !== layer * size + other - node;
       relax(node, layer * size + other, length + (turned ? 0.2 : 0));
     }
     const flipped = (1 - layer) * size + cell;
-    const owner = grid.owner[1 - layer][cell];
-    if ((owner === FREE || owner === net) && grid.viaFits(cell, net, trackWidth)) {
+    const owner = owners[1 - layer][cell];
+    if ((owner === FREE || owner === net) && grid.viaFits(cell, net)) {
       relax(node, flipped, VIA_COST);
     }
   }
   return null;
 }
 
-function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[]): Routing & { failed: Set<string> } {
-  const grid = new Grid(board);
-  const width = board.trackWidth;
-  for (const job of jobs) for (const pad of job.pads) grid.stampPad(pad, job.id, width);
-  for (const pad of loose) grid.stampPad(pad, BLOCKED, width);
+function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[], deadline: number) {
+  const grid = new Grid(
+    board,
+    jobs.map((job) => job.width),
+  );
+  for (const job of jobs) for (const pad of job.pads) grid.stampPad(pad, job.id);
+  for (const pad of loose) grid.stampPad(pad, BLOCKED);
 
-  const result = { tracks: [] as Track[], vias: [] as Via[], unrouted: [] as Unrouted[], failed: new Set<string>() };
+  const result = {
+    tracks: [] as Track[],
+    vias: [] as Via[],
+    unrouted: [] as Unrouted[],
+    timedOut: false,
+    failed: new Set<string>(),
+  };
   const point = (node: number): Point => ({
     x: ((node % grid.size) % grid.cols) * STEP,
     y: Math.floor((node % grid.size) / grid.cols) * STEP,
@@ -238,8 +271,9 @@ function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[]): Routing & 
   const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
   for (const job of jobs) {
+    const { width } = job;
     const connected = [job.pads[0]];
-    const tree = new Set(terminals(grid, job.pads[0], job.id));
+    const tree = new Set(terminals(grid, job.pads[0], job.id, width));
     const centers = new Map<number, PlacedPad>();
     for (const node of tree) centers.set(node, job.pads[0]);
     const rest = job.pads.slice(1);
@@ -256,9 +290,11 @@ function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[]): Routing & 
         }
       });
       const [pad] = rest.splice(best.index, 1);
-      const targets = terminals(grid, pad, job.id);
-      const path = tree.size && targets.length ? search(grid, job.id, width, tree, targets) : null;
+      const targets = terminals(grid, pad, job.id, width);
+      const late = Date.now() > deadline;
+      const path = !late && tree.size && targets.length ? search(grid, job.id, width, tree, targets, deadline) : null;
       if (!path) {
+        result.timedOut ||= Date.now() > deadline;
         result.failed.add(job.name);
         result.unrouted.push({ net: job.name, from: best.from.id, to: pad.id, a: best.from, b: pad });
         continue;
@@ -288,7 +324,7 @@ function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[]): Routing & 
         if (i === path.length && centers.has(end) && distance(pad, last) > 0.001) points.push({ x: pad.x, y: pad.y });
         if (points.length > 1) {
           added.push({
-            track: { net: job.name, layer: nodes[0] >= grid.size ? 1 : 0, points },
+            track: { net: job.name, layer: nodes[0] >= grid.size ? 1 : 0, width, points },
             cells: nodes,
           });
         }
@@ -305,24 +341,20 @@ function routeOnce(board: Board, jobs: NetJob[], loose: PlacedPad[]): Routing & 
       result.tracks.push(track);
       for (const node of cells) {
         const { x, y } = point(node);
-        grid.around(x, y, 0, 0, width + CLEARANCE + SLACK, (cell) => grid.claim(track.layer, cell, job.id));
+        grid.stamp([track.layer], x, y, 0, 0, width / 2, job.id);
         grid.around(x, y, 0, 0, width / 2 + CLEARANCE + VIA_SIZE / 2, (cell) => (grid.noVia[cell] = 1));
       }
     }
     for (const via of addedVias) {
       result.vias.push(via);
-      for (const layer of [0, 1] as const) {
-        grid.around(via.x, via.y, 0, 0, VIA_SIZE / 2 + CLEARANCE + width / 2 + SLACK, (cell) =>
-          grid.claim(layer, cell, job.id),
-        );
-      }
+      grid.stamp([0, 1], via.x, via.y, 0, 0, VIA_SIZE / 2, job.id);
       grid.around(via.x, via.y, 0, 0, VIA_SIZE + CLEARANCE, (cell) => (grid.noVia[cell] = 1));
     }
   }
   return result;
 }
 
-export function routeBoard(board: Board): Routing {
+export function routeBoard(board: Board, { budgetMs = TIME_BUDGET_MS } = {}): Routing {
   const pads = board.components.flatMap(placedPads);
   const byId = new Map(pads.filter((pad) => pad.pin).map((pad) => [pad.id, pad]));
   const used = new Set<string>();
@@ -336,7 +368,9 @@ export function routeBoard(board: Board): Routing {
         members.push(pad);
       }
     }
-    if (members.length > 0) jobs.push({ name: net.name, id: jobs.length + 1, pads: members });
+    if (members.length > 0) {
+      jobs.push({ name: net.name, id: jobs.length + 1, width: netWidth(board, net), pads: members });
+    }
   });
   const loose = pads.filter((pad) => !used.has(pad.id));
 
@@ -347,15 +381,16 @@ export function routeBoard(board: Board): Routing {
     Math.min(...list.map((p) => p.y));
   let order = [...jobs].sort((a, b) => spread(a) - spread(b));
 
+  // Percobaan pertama boleh memakai dua kali anggaran; selebihnya hanya sisa anggaran.
   const started = Date.now();
-  let best = routeOnce(board, order, loose);
+  let best = routeOnce(board, order, loose, started + budgetMs * 2);
   let latest = best;
   for (let pass = 1; pass < MAX_PASSES && best.unrouted.length > 0; pass++) {
-    if (Date.now() - started > TIME_BUDGET_MS) break;
+    if (Date.now() - started > budgetMs) break;
     // Net yang gagal didahulukan pada percobaan berikutnya.
     order = [...order.filter((j) => latest.failed.has(j.name)), ...order.filter((j) => !latest.failed.has(j.name))];
-    latest = routeOnce(board, order, loose);
+    latest = routeOnce(board, order, loose, started + budgetMs * 2);
     if (latest.unrouted.length < best.unrouted.length) best = latest;
   }
-  return { tracks: best.tracks, vias: best.vias, unrouted: best.unrouted };
+  return { tracks: best.tracks, vias: best.vias, unrouted: best.unrouted, timedOut: best.timedOut };
 }

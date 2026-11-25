@@ -2,11 +2,10 @@
 
 import { useRef, useState } from "react";
 import type { BoardState, Issue } from "@/lib/pcb";
-import type { Unrouted } from "@/lib/pcb-router";
 import type { PublicSettings } from "@/lib/settings";
 import { AttachmentBar, AttachmentZone, useAttachments } from "../components/attachments";
 import { ModelSelect, useModelChoice } from "../components/model-select";
-import { buttonClass, inputClass } from "../studio/studio";
+import { buttonClass, inputClass, primaryClass } from "../components/ui";
 
 const EXAMPLES = [
   "Buat lampu LED berkedip dengan NE555, suplai 9V lewat pin header",
@@ -14,21 +13,21 @@ const EXAMPLES = [
   "Driver relay 5V dengan transistor, dioda flyback, dan LED status",
 ];
 
-const primaryClass = "rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-40";
-
 type Props = {
   settings: PublicSettings | null;
   version: number;
   empty: boolean;
   issues: Issue[];
-  unrouted: Unrouted[];
+  /** true selama routing dan DRC untuk papan terbaru belum selesai. */
+  checking: boolean;
   onResult: (state: BoardState) => void;
   onOpenSettings: () => void;
 };
 
 type Task = "design" | "review" | "fix";
 
-export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResult, onOpenSettings }: Props) {
+export function PcbAiPanel({ settings, version, empty, issues, checking, onResult, onOpenSettings }: Props) {
+  const [autoRepair, setAutoRepair] = useState(true);
   const model = useModelChoice(settings);
   const [prompt, setPrompt] = useState("");
   const [task, setTask] = useState<Task | null>(null);
@@ -36,10 +35,7 @@ export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResul
   const [message, setMessage] = useState<{ text: string; failed: boolean } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const attachments = useAttachments();
-  const problems = [
-    ...issues.map((issue) => issue.message),
-    ...unrouted.map((u) => `Router gagal menyambung net ${u.net}: ${u.from} ke ${u.to}.`),
-  ];
+  const problems = issues.map((issue) => issue.message);
 
   const run = async (kind: Task, text: string) => {
     // Lampiran hanya ikut pada permintaan rancang, bukan review atau perbaiki.
@@ -50,15 +46,23 @@ export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResul
     setMessage(null);
     try {
       const body =
-        kind === "review" ? { mode: "review" } : { mode: "design", prompt: text.slice(0, 4000), attachments: sent };
+        kind === "review"
+          ? { mode: "review" }
+          : {
+              mode: "design",
+              prompt: text.slice(0, 4000),
+              attachments: sent,
+              // "Perbaiki masalah" sudah merupakan perbaikan, jadi cukup satu panggilan.
+              autoRepair: kind === "design" && autoRepair,
+            };
       const response = await fetch("/api/pcb/ai", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...body, ...model.request }),
         signal: controller.signal,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data) throw new Error(data?.error ?? `Server membalas ${response.status}.`);
       if (kind === "review") {
         setReview({ text: data.review, version: data.version });
         return;
@@ -66,7 +70,12 @@ export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResul
       onResult(data);
       if (kind === "design") setPrompt("");
       attachments.removeSent(sent);
-      setMessage({ text: "Desain diterapkan. Periksa tab Cek sebelum diekspor.", failed: false });
+      const calls = data.calls > 1 ? " AI memakai 2 panggilan." : "";
+      const remaining = data.problems > 0 ? ` Masih ada ${data.problems} masalah di tab Cek.` : "";
+      setMessage({
+        text: `Desain diterapkan.${calls}${remaining || " Periksa tab Cek sebelum diekspor."}`,
+        failed: false,
+      });
     } catch (error) {
       setMessage(
         controller.signal.aborted
@@ -98,6 +107,10 @@ export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResul
         />
       </label>
       <AttachmentBar attachments={attachments} />
+      <label className="flex items-start gap-2 text-xs">
+        <input type="checkbox" checked={autoRepair} onChange={(e) => setAutoRepair(e.target.checked)} />
+        <span>Periksa dan perbaiki otomatis. Bila hasilnya gagal cek, AI dipanggil satu kali lagi (menambah biaya).</span>
+      </label>
       <button
         className={`${primaryClass} w-full`}
         disabled={!canSend}
@@ -111,7 +124,7 @@ export function PcbAiPanel({ settings, version, empty, issues, unrouted, onResul
         </button>
         <button
           className={buttonClass}
-          disabled={busy || empty || problems.length === 0}
+          disabled={busy || empty || checking || problems.length === 0}
           onClick={() =>
             run(
               "fix",

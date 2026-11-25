@@ -1,16 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { checkBoard, EMPTY_BOARD, type BoardOperation, type BoardState } from "@/lib/pcb";
+import { useState } from "react";
+import { EMPTY_BOARD, type BoardOperation, type BoardState, type Component } from "@/lib/pcb";
 import { productionFiles, zip } from "@/lib/pcb-export";
-import { routeBoard } from "@/lib/pcb-router";
-import type { PublicSettings } from "@/lib/settings";
+import { historyShortcut, useDocument, useSettings, useShortcuts } from "../components/hooks";
+import { buttonClass, inputClass, Tabs } from "../components/ui";
 import { SettingsPanel } from "../studio/settings-panel";
-import { buttonClass, inputClass } from "../studio/studio";
 import { download } from "../studio/three-utils";
 import { PcbAiPanel } from "./ai-panel";
 import BoardView, { type Layers } from "./board-view";
-import { CheckPanel, ComponentPanel, rotated } from "./info-panels";
+import { BoardSettings, CheckPanel, ComponentPanel, NetPanel, rotated } from "./info-panels";
+import { useAnalysis } from "./use-analysis";
 
 const TABS = [
   ["ai", "AI"],
@@ -19,6 +19,13 @@ const TABS = [
   ["settings", "Pengaturan"],
 ] as const;
 
+const NUDGE: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
+
 const LAYERS = [
   ["top", "Atas (merah)"],
   ["bottom", "Bawah (biru)"],
@@ -26,77 +33,48 @@ const LAYERS = [
 ] as const;
 
 export default function PcbEditor() {
-  const [state, setState] = useState<BoardState | null>(null);
+  const { state, accept, send, error, setError, offline } = useDocument<BoardState, BoardOperation>("/api/pcb");
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<(typeof TABS)[number][0]>("ai");
   const [layers, setLayers] = useState<Layers>({ top: true, bottom: true, silk: true });
-  const [error, setError] = useState("");
-  const [offline, setOffline] = useState(false);
-  const [settings, setSettings] = useState<PublicSettings | null>(null);
-  const versionRef = useRef(-1);
+  const [settings, setSettings] = useSettings();
 
-  useEffect(() => {
-    fetch("/api/settings", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then(setSettings)
-      .catch(() => {});
-  }, []);
-
-  // Abaikan balasan lama yang datang belakangan.
-  const accept = useCallback((next: BoardState) => {
-    if (next.version <= versionRef.current) return;
-    versionRef.current = next.version;
-    setState(next);
-  }, []);
-
-  // Polling ringan agar perubahan dari MCP atau aplikasi luar langsung terlihat.
-  useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const response = await fetch(`/api/pcb?since=${versionRef.current}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(String(response.status));
-        const data = await response.json();
-        if (!stopped) {
-          if (!data.unchanged) accept(data);
-          setOffline(false);
-        }
-      } catch {
-        if (!stopped) setOffline(true);
-      }
-      if (!stopped) timer = setTimeout(poll, 1500);
-    };
-    poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [accept]);
-
-  const send = useCallback(
-    async (operation: BoardOperation) => {
-      setError("");
-      try {
-        const response = await fetch("/api/pcb", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(operation),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        accept(data);
-      } catch (caught) {
-        setError((caught as Error).message || "Gagal menyimpan perubahan.");
-      }
-    },
-    [accept],
-  );
-
-  // Routing dan cek dihitung ulang hanya saat papan berubah.
+  // Routing dan DRC dihitung ulang di worker saat papan berubah.
   const board = state?.board ?? EMPTY_BOARD;
-  const routing = useMemo(() => routeBoard(board), [board]);
-  const issues = useMemo(() => checkBoard(board), [board]);
+  const { analysis, pending } = useAnalysis(board);
+  const { routing } = analysis;
+
+  useShortcuts((event) => {
+    const history = historyShortcut(event);
+    if (history) {
+      send({ op: history });
+      return true;
+    }
+    const component = board.components.find((c) => c.ref === selected);
+    if (!component || event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.key.toLowerCase() === "r") {
+      send(rotated(component));
+      return true;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      send({ op: "remove", ref: component.ref });
+      return true;
+    }
+    if (event.key in NUDGE) {
+      // Shift menggeser satu kisi 2,54 mm.
+      const step = event.shiftKey ? 2.54 : 0.5;
+      const [dx, dy] = NUDGE[event.key];
+      const clamp = (value: number, max: number) => Math.min(max, Math.max(0, Math.round(value * 100) / 100));
+      const moved: Component = {
+        ...component,
+        x: clamp(component.x + dx * step, board.width),
+        y: clamp(component.y + dy * step, board.height),
+      };
+      send({ op: "move", ref: moved.ref, x: moved.x, y: moved.y, rotation: moved.rotation });
+      return true;
+    }
+    return false;
+  });
 
   if (!state) {
     return <p className="p-8 text-sm">{offline ? "Tidak bisa memuat papan. Cek server." : "Memuat desain PCB…"}</p>;
@@ -104,7 +82,7 @@ export default function PcbEditor() {
 
   const empty = board.components.length === 0;
   const active = board.components.find((c) => c.ref === selected);
-  const problemCount = issues.length + routing.unrouted.length;
+  const problemCount = pending ? 0 : analysis.issues.length;
   const fileName = board.name.replace(/[^\p{L}\p{N}_-]+/gu, "-").slice(0, 60) || "pcb";
 
   const exportGerber = () => {
@@ -146,21 +124,21 @@ export default function PcbEditor() {
             Putar 90°
           </button>
         </div>
-        <div
-          className="relative h-[60vh] min-h-0 bg-[#15171c] outline-none lg:h-auto lg:flex-1"
-          tabIndex={0}
-          onKeyDown={(event) => {
-            if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && active) send(rotated(active));
-          }}
-        >
+        <div className="relative h-[60vh] min-h-0 bg-[#15171c] lg:h-auto lg:flex-1">
           <BoardView
             board={board}
             routing={routing}
+            stale={pending}
             layers={layers}
             selected={selected}
             onSelect={setSelected}
             onMove={({ ref, x, y, rotation }) => send({ op: "move", ref, x, y, rotation })}
           />
+          {pending && !empty && (
+            <p role="status" className="absolute top-2 left-2 rounded bg-black/70 px-2 py-1 text-xs text-zinc-100">
+              Menghitung jalur…
+            </p>
+          )}
           {empty && (
             <p className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-200">
               Papan masih kosong. Tulis rangkaian yang diinginkan di tab AI.
@@ -170,7 +148,8 @@ export default function PcbEditor() {
         <div className="flex flex-wrap items-center gap-2 border-t border-current/15 p-2">
           <span className="mr-auto px-1 text-xs opacity-60">
             {board.components.length} komponen · {board.nets.length} net · {routing.vias.length} via ·{" "}
-            {routing.unrouted.length} belum tersambung{offline && " · koneksi ke server terputus"}
+            {pending ? "memeriksa…" : `${routing.unrouted.length} belum tersambung`}
+            {offline && " · koneksi ke server terputus"}
           </span>
           <label className="flex items-center gap-1 text-xs">
             Lebar jalur
@@ -178,7 +157,7 @@ export default function PcbEditor() {
               className={`${inputClass} w-auto bg-background`}
               value={board.trackWidth}
               disabled={empty}
-              onChange={(e) => send({ op: "replace", board: { ...board, trackWidth: Number(e.target.value) } })}
+              onChange={(e) => send({ op: "rules", rules: { trackWidth: Number(e.target.value) } })}
             >
               {[...new Set([0.25, 0.3, 0.4, 0.5, 0.8, 1, board.trackWidth])]
                 .sort((a, b) => a - b)
@@ -191,6 +170,9 @@ export default function PcbEditor() {
           </label>
           <button className={buttonClass} onClick={() => send({ op: "undo" })}>
             Urungkan
+          </button>
+          <button className={buttonClass} onClick={() => send({ op: "redo" })}>
+            Ulangi
           </button>
           <button className={buttonClass} disabled={empty} onClick={() => send({ op: "replace", board: EMPTY_BOARD })}>
             Kosongkan
@@ -215,45 +197,47 @@ export default function PcbEditor() {
           >
             Ekspor JSON
           </button>
-          <button className={buttonClass} disabled={empty} onClick={exportGerber}>
+          <button className={buttonClass} disabled={empty || pending} onClick={exportGerber}>
             Ekspor Gerber (ZIP)
           </button>
         </div>
       </section>
 
       <aside className="flex min-h-0 flex-col border-current/15 lg:w-96 lg:border-l">
-        <div className="flex border-b border-current/15" role="tablist">
-          {TABS.map(([key, label]) => (
-            <button
-              key={key}
-              role="tab"
-              aria-selected={tab === key}
-              className={`flex-1 border-b-2 py-2.5 text-sm ${tab === key ? "border-indigo-500 font-semibold" : "border-transparent opacity-60"}`}
-              onClick={() => setTab(key)}
-            >
-              {label}
-              {key === "check" && problemCount > 0 && ` (${problemCount})`}
-            </button>
-          ))}
-        </div>
-        {error && <p className="m-3 rounded-md bg-red-500/15 p-2 text-sm text-red-500">{error}</p>}
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <Tabs
+          label="Panel desain PCB"
+          tabs={TABS.map(([key, label]) =>
+            key === "check" && problemCount > 0 ? ([key, `${label} (${problemCount})`] as const) : ([key, label] as const),
+          )}
+          active={tab}
+          onChange={setTab}
+        />
+        {error && <p role="alert" className="m-3 rounded-md bg-red-500/15 p-2 text-sm text-red-500">{error}</p>}
+        <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto p-3">
           {/* Panel AI tetap terpasang agar prompt, review, dan prosesnya tidak hilang saat pindah tab. */}
           <div hidden={tab !== "ai"}>
             <PcbAiPanel
               settings={settings}
               version={state.version}
               empty={empty}
-              issues={issues}
-              unrouted={routing.unrouted}
+              issues={pending ? [] : analysis.issues}
+              checking={pending}
               onResult={accept}
               onOpenSettings={() => setTab("settings")}
             />
           </div>
           {tab === "components" && (
-            <ComponentPanel board={board} selected={selected} onSelect={setSelected} send={send} />
+            <div className="space-y-6">
+              <ComponentPanel board={board} selected={selected} onSelect={setSelected} send={send} />
+              <BoardSettings board={board} send={send} />
+              <NetPanel board={board} send={send} />
+              <p className="text-xs opacity-60">
+                Pintasan: R putar, Delete hapus, panah geser 0,5 mm (Shift 2,54 mm), ⌘/Ctrl+Z urungkan, tambah Shift
+                untuk ulangi.
+              </p>
+            </div>
           )}
-          {tab === "check" && <CheckPanel board={board} routing={routing} />}
+          {tab === "check" && <CheckPanel board={board} analysis={analysis} checking={pending} />}
           {tab === "settings" && <SettingsPanel settings={settings} onChange={setSettings} />}
         </div>
       </aside>

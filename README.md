@@ -1,63 +1,82 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FluxionLab
 
-## Getting Started
+Studio desain **3D** dan **PCB** berbasis AI yang berjalan di komputer sendiri. Model bisa dipilih: Claude atau layanan apa pun dengan API kompatibel OpenAI (OpenAI, OpenRouter, Ollama, dan lainnya). Keduanya juga bisa dikendalikan lewat MCP dan REST API.
 
-First, run the development server:
+## Menjalankan
+
+Butuh Node.js 22.15 atau lebih baru.
+
+```bash
+npm ci
+```
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Untuk pemakaian sehari-hari, gunakan hasil build:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build && npm start
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Server hanya menerima koneksi dari komputer ini (`127.0.0.1:3000`). Isi API key Claude atau tambah koneksi model lain di tab **Pengaturan**, tanpa restart. Pemakaian API dikenai biaya oleh penyedianya.
 
-## Desain 3D (AI + MCP)
+## Fitur
 
-Buka menu **Desain 3D** (`/studio`). Jalankan dengan `npm run dev`; server hanya menerima koneksi dari komputer ini.
+### Desain 3D (`/studio`)
+- Buat dan revisi scene dari tulisan, gambar, PDF, atau file teks.
+- Edit manual, duplikat, urungkan/ulangi. Pintasan: `Delete`, `⌘/Ctrl+Z`, tambah `Shift` untuk ulangi.
+- Ekspor GLB, OBJ, STL, JSON. STL: sumbu Z ke atas, titik terendah di Z=0, 1 satuan = 1 mm, `plane` dilewati.
 
-1. Isi API key Claude atau tambah koneksi model lain (API kompatibel OpenAI) di tab **Pengaturan**. Tidak perlu restart. Kunci disimpan sebagai teks biasa di `.data/settings.json` (tidak masuk git, izin 600). Pemakaian API dikenai biaya oleh penyedianya.
-Prompt AI (3D dan PCB) menerima lampiran: tempel (⌘/Ctrl+V), seret, atau tombol **Lampirkan**. Gambar (PNG/JPG/WEBP/GIF, diperkecil otomatis; GIF besar hanya diambil satu frame), PDF maksimal 10 MB (khusus Claude), dan file teks; maksimal 5 file. Model lain harus mendukung gambar. Video dan audio belum didukung.
+### Desain PCB (`/pcb`)
+- AI memilih komponen, netlist, lebar jalur per net, dan tata letak. Ada review AI dan perbaikan masalah.
+- **Perbaiki otomatis** (bisa dimatikan): bila hasil gagal cek, model dipanggil satu kali lagi. Hasil perbaikan dipakai hanya jika masalahnya berkurang tanpa membuang komponen.
+- Bentuk pad berasal dari pustaka footprint (`lib/pcb.ts`), bukan dari AI.
+- Autorouter dua lapis dengan lebar jalur per net, dijalankan di Web Worker.
+- DRC geometris yang terpisah dari router: korsleting, jarak tembaga, jarak ke tepi, net terputus.
+- Ekspor ZIP: Gerber (tembaga, mask, silkscreen dengan teks dan penanda pin 1, garis papan), bor Excellon, BOM, posisi komponen, ringkasan fabrikasi.
+- Pintasan: `R` putar, `Delete` hapus, panah geser 0,5 mm (`Shift` 2,54 mm), urungkan/ulangi.
 
-2. Hubungkan lewat MCP (sesuaikan port): `claude mcp add --transport http fluxion3d http://localhost:3000/api/mcp`. Contoh untuk aplikasi lain ada di tab **Koneksi**.
-3. REST API: `GET /api/scene` dan `POST /api/scene` dengan `op`: `add`, `update`, `remove`, `replace`, atau `undo`.
-4. Ekspor: GLB, OBJ, STL, JSON.
-5. Cetak 3D: STL diekspor dengan Z ke atas, titik terendah di Z=0, 1 satuan = 1 mm; `plane` dilewati. Bentuk bertumpuk tidak digabung (belum ada operasi boolean/lubang). Desain buatan AI di aplikasi memakai skala meter, jadi perbesar di slicer atau minta ukuran dalam mm lewat MCP.
+## Integrasi
 
-Batasan: satu scene bersama, disimpan di `.data/scene.json` (riwayat urungkan hilang saat server restart). Bentuk masih berupa primitif. Dirancang untuk pemakaian lokal; jangan di-deploy publik tanpa menambahkan autentikasi.
+**MCP** (Streamable HTTP):
 
-## Desain PCB (AI + MCP)
+```bash
+claude mcp add --transport http fluxion3d http://localhost:3000/api/mcp
+```
 
-Buka menu **Desain PCB** (`/pcb`). Pengaturan model sama dengan studio 3D.
+| Bagian | Tool MCP | REST |
+|---|---|---|
+| 3D | `get_scene`, `set_scene`, `add_objects`, `update_object`, `remove_objects`, `undo`, `redo` | `GET/POST /api/scene` (`add`, `update`, `remove`, `replace`, `undo`, `redo`) |
+| PCB | `get_board`, `set_board`, `move_component`, `remove_component`, `undo_board`, `redo_board` | `GET/POST /api/pcb` (`replace`, `move`, `remove`, `rules`, `undo`, `redo`) |
 
-1. Tab **AI**: rancang dari deskripsi, revisi, review, atau minta perbaiki masalah. AI memilih komponen, netlist, dan tata letak.
-2. Bentuk pad diambil dari pustaka footprint (`lib/pcb.ts`), bukan dari AI. Jalur dibuat oleh autorouter dua lapis (`lib/pcb-router.ts`).
-3. Seret komponen untuk memindahkan; tombol `R` memutar 90°. Jalur dihitung ulang.
-4. Ekspor Gerber (ZIP): tembaga, solder mask, silkscreen, garis papan, bor Excellon, BOM, posisi komponen. Ada juga ekspor/impor JSON.
-5. MCP (alamat yang sama dengan studio 3D): `get_board`, `set_board`, `move_component`, `remove_component`, `undo_board`.
-6. REST API: `GET /api/pcb` dan `POST /api/pcb` dengan `op`: `replace`, `move`, `remove`, atau `undo`.
+`GET /api/health` untuk pengecekan hidup.
 
-Batasan: komponen hanya di lapisan atas; footprint terbatas pada daftar; satu lebar jalur untuk semua net; tidak ada copper pour atau editor jalur manual; silkscreen hanya kotak komponen (tanpa teks dan penanda pin 1); tidak ada simulasi atau ERC. Cek di aplikasi hanya mencakup tata letak, netlist, dan sambungan. Sebelum memesan: periksa Gerber di penampil Gerber, cocokkan pinout dengan datasheet, dan jalankan DFM pabrik. Satu papan bersama, disimpan di `.data/pcb.json`.
+## Data dan keamanan
 
-## Learn More
+- Semua data ada di `.data/` (tidak masuk git, file berizin 600): `scene.json`, `pcb.json`, riwayatnya, dan `settings.json`. Penulisan bersifat atomik; file rusak dipindahkan ke `*.rusak-*`, tidak ditimpa. Cadangkan folder ini bila desainnya penting.
+- **API key disimpan sebagai teks biasa** di `.data/settings.json`. Kunci tidak dikirim balik ke browser dan disensor dari pesan galat.
+- API menolak permintaan lintas situs dan host non-lokal. `FLUXION_API_TOKEN` (di `.env.local`) mengizinkan akses scene/PCB/MCP dengan `Authorization: Bearer …`; pengaturan selalu hanya lokal.
+- Ukuran badan permintaan dibatasi, paling banyak 2 permintaan AI bersamaan, batas waktu AI 280 detik, pengalihan dari penyedia model ditolak, dan header keamanan (termasuk CSP) dipasang.
+- Log server berupa satu baris JSON per kejadian, termasuk pemakaian token, tanpa kunci, prompt, atau lampiran.
 
-To learn more about Next.js, take a look at the following resources:
+**Ini aplikasi untuk satu pengguna di komputer sendiri.** Jangan di-deploy publik: belum ada login, pemisahan data antar-pengguna, atau pembatasan per pengguna.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Pengembangan
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run check
+```
 
-## Deploy on Vercel
+Menjalankan typecheck, lint, test, dan build. CI (`.github/workflows/ci.yml`) menjalankan hal yang sama ditambah `npm audit`. Test memakai `node:test`, penyedia model tiruan, dan folder data sementara, jadi tidak menyentuh `.data/` dan tidak memanggil API berbayar. Termasuk uji acak 150 papan yang hasil routing-nya wajib lolos DRC.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Sebelum memesan PCB
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Cek di aplikasi tidak menilai benar tidaknya rangkaian. Cocokkan pinout dan nilai komponen dengan datasheet, buka ZIP di penampil Gerber, lalu jalankan DFM pabrik.
+
+## Batasan yang diketahui
+
+- PCB: komponen hanya di lapisan atas; footprint terbatas pada pustaka; tanpa copper pour, editor jalur manual, ERC, simulasi, atau impor/ekspor KiCad. Router bisa gagal pada papan padat (dilaporkan sebagai "belum tersambung").
+- 3D: bentuk masih primitif; belum ada operasi boolean. Bentuk bertumpuk tidak digabung saat ekspor STL.
+- Satu scene dan satu papan aktif.

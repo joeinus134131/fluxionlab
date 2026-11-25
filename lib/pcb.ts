@@ -115,6 +115,12 @@ export const componentSchema = z.object({
 export const netSchema = z.object({
   name: z.string().min(1).max(40),
   pins: z.array(z.string().max(12)).max(80).describe('Format "REF.PIN", contoh "R1.2"'),
+  width: z
+    .number()
+    .min(0)
+    .max(2)
+    .optional()
+    .describe("Lebar jalur net ini dalam mm. 0 atau kosong berarti memakai trackWidth papan."),
 });
 
 export const boardSchema = z.object({
@@ -137,7 +143,12 @@ export const boardOperationSchema = z.discriminatedUnion("op", [
     rotation: componentSchema.shape.rotation,
   }),
   z.object({ op: z.literal("remove"), ref: z.string() }),
+  z.object({
+    op: z.literal("rules"),
+    rules: boardSchema.pick({ name: true, width: true, height: true, trackWidth: true }).partial(),
+  }),
   z.object({ op: z.literal("undo") }),
+  z.object({ op: z.literal("redo") }),
 ]);
 
 export type Board = z.infer<typeof boardSchema>;
@@ -154,6 +165,10 @@ export const EMPTY_BOARD: Board = {
   nets: [],
   notes: "",
 };
+
+/** Lebar jalur sebuah net, tidak pernah lebih kecil dari lebar dasar papan. Dibulatkan ke atas per 0,05 mm. */
+export const netWidth = (board: Board, net: { width?: number }) =>
+  Math.max(board.trackWidth, Math.ceil((net.width ?? 0) * 20 - 1e-9) / 20);
 
 export type PlacedPad = Pad & { ref: string; /** "R1.2" */ id: string };
 
@@ -230,6 +245,14 @@ export function checkBoard(board: Board): Issue[] {
       const other = netOfPin.get(pin);
       if (other) error(`Pin ${pin} ada di dua net: ${other} dan ${net.name}.`);
       netOfPin.set(pin, net.name);
+    }
+  }
+  if (board.nets.length > 0) {
+    const wired = new Set([...netOfPin.keys()].map((pin) => pin.split(".")[0]));
+    for (const component of board.components) {
+      if (component.footprint !== "MOUNTING_HOLE_M3" && !wired.has(component.ref)) {
+        warning(`${component.ref} tidak tersambung ke net mana pun.`);
+      }
     }
   }
   return issues;

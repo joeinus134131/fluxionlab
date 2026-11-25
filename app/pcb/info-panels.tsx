@@ -1,9 +1,9 @@
 "use client";
 
-import { checkBoard, type Board, type BoardOperation, type Component, type Issue } from "@/lib/pcb";
+import { netWidth, type Board, type BoardOperation, type Component } from "@/lib/pcb";
+import type { Analysis } from "@/lib/pcb-analysis";
 import { billOfMaterials } from "@/lib/pcb-export";
-import type { Routing } from "@/lib/pcb-router";
-import { buttonClass } from "../studio/studio";
+import { buttonClass, inputClass } from "../components/ui";
 
 type ComponentProps = {
   board: Board;
@@ -75,14 +75,8 @@ export function ComponentPanel({ board, selected, onSelect, send }: ComponentPro
   );
 }
 
-export function CheckPanel({ board, routing }: { board: Board; routing: Routing }) {
-  const issues: Issue[] = [
-    ...checkBoard(board),
-    ...routing.unrouted.map((u) => ({
-      level: "error" as const,
-      message: `Belum tersambung: ${u.net} (${u.from} ke ${u.to}).`,
-    })),
-  ];
+export function CheckPanel({ board, analysis, checking }: { board: Board; analysis: Analysis; checking: boolean }) {
+  const { issues } = analysis;
   const bom = billOfMaterials(board);
   return (
     <div className="space-y-5">
@@ -90,8 +84,12 @@ export function CheckPanel({ board, routing }: { board: Board; routing: Routing 
         <h3 className="text-sm font-semibold">Pemeriksaan</h3>
         {board.components.length === 0 ? (
           <p className="text-sm opacity-60">Belum ada desain.</p>
+        ) : checking ? (
+          <p className="text-sm opacity-60">Menghitung jalur dan memeriksa…</p>
         ) : issues.length === 0 ? (
-          <p className="text-sm text-emerald-500">Tidak ada masalah tata letak, netlist, atau sambungan.</p>
+          <p className="text-sm text-emerald-500">
+            Lolos cek tata letak, netlist, sambungan, dan DRC jarak tembaga.
+          </p>
         ) : (
           <ul className="space-y-1 text-sm">
             {issues.map((issue, i) => (
@@ -138,5 +136,92 @@ export function CheckPanel({ board, routing }: { board: Board; routing: Routing 
         </section>
       )}
     </div>
+  );
+}
+
+const WIDTHS = [0.3, 0.4, 0.5, 0.8, 1, 1.5, 2];
+
+export function NetPanel({ board, send }: { board: Board; send: (operation: BoardOperation) => void }) {
+  if (board.nets.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h3 className="text-sm font-semibold">Lebar jalur per net</h3>
+      <ul className="space-y-1">
+        {board.nets.map((net, index) => {
+          const current = netWidth(board, net);
+          return (
+            <li key={`${net.name}-${index}`} className="flex items-center gap-2 text-sm">
+              <span className="mr-auto truncate" title={net.pins.join(", ")}>
+                {net.name}
+              </span>
+              <select
+                aria-label={`Lebar jalur net ${net.name}`}
+                className="w-28 shrink-0 rounded-md border border-current/20 bg-background px-2 py-1 text-sm"
+                value={net.width && current > board.trackWidth ? current : 0}
+                onChange={(e) => {
+                  const width = Number(e.target.value);
+                  const nets = board.nets.map((n, i) => (i === index ? { ...n, width } : n));
+                  send({ op: "replace", board: { ...board, nets } });
+                }}
+              >
+                <option value={0}>Dasar</option>
+                {[...new Set([...WIDTHS, current])]
+                  .filter((width) => width > board.trackWidth)
+                  .sort((a, b) => a - b)
+                  .map((width) => (
+                    <option key={width} value={width}>
+                      {width} mm
+                    </option>
+                  ))}
+              </select>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+type SizeProps = { board: Board; send: (operation: BoardOperation) => void };
+
+export function BoardSettings({ board, send }: SizeProps) {
+  return (
+    <form
+      // Isi form diatur ulang saat ukuran berubah dari mana pun.
+      key={`${board.name}|${board.width}|${board.height}`}
+      className="space-y-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        send({
+          op: "rules",
+          rules: { name: String(data.get("name")), width: Number(data.get("width")), height: Number(data.get("height")) },
+        });
+      }}
+    >
+      <h3 className="text-sm font-semibold">Papan</h3>
+      <label className="block text-sm">
+        Nama
+        <input name="name" className={`${inputClass} mt-1`} required maxLength={120} defaultValue={board.name} />
+      </label>
+      <div className="flex gap-2">
+        {(["width", "height"] as const).map((field) => (
+          <label key={field} className="block text-sm">
+            {field === "width" ? "Lebar (mm)" : "Tinggi (mm)"}
+            <input
+              name={field}
+              type="number"
+              step="any"
+              min={10}
+              max={150}
+              required
+              className={`${inputClass} mt-1`}
+              defaultValue={board[field]}
+            />
+          </label>
+        ))}
+      </div>
+      <button className={buttonClass}>Terapkan</button>
+    </form>
   );
 }

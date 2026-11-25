@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { SHAPES, type Operation, type SceneState } from "@/lib/scene";
-import type { PublicSettings } from "@/lib/settings";
+import { historyShortcut, useDocument, useSettings, useShortcuts } from "../components/hooks";
+import { buttonClass, Tabs } from "../components/ui";
 import { AiPanel } from "./ai-panel";
 import { ConnectPanel } from "./connect-panel";
 import { ObjectPanel } from "./object-panel";
@@ -17,78 +18,25 @@ const TABS = [
   ["settings", "Pengaturan"],
 ] as const;
 
-export const buttonClass =
-  "rounded-md border border-current/20 px-3 py-1.5 text-sm hover:bg-current/10 disabled:opacity-40";
-export const inputClass = "w-full rounded-md border border-current/20 bg-transparent px-2 py-1.5 text-sm";
-
 export default function Studio() {
-  const [state, setState] = useState<SceneState | null>(null);
+  const { state, accept, send, error, setError, offline } = useDocument<SceneState, Operation>("/api/scene");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<(typeof TABS)[number][0]>("ai");
-  const [error, setError] = useState("");
   const [fitRequest, setFitRequest] = useState(0);
-  const [offline, setOffline] = useState(false);
-  const versionRef = useRef(-1);
-  const [settings, setSettings] = useState<PublicSettings | null>(null);
+  const [settings, setSettings] = useSettings();
 
-  useEffect(() => {
-    fetch("/api/settings", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then(setSettings)
-      .catch(() => {});
-  }, []);
-
-  // Abaikan balasan lama yang datang belakangan.
-  const accept = useCallback((next: SceneState) => {
-    if (next.version <= versionRef.current) return;
-    versionRef.current = next.version;
-    setState(next);
-  }, []);
-
-  // Polling ringan agar perubahan dari MCP atau aplikasi luar langsung terlihat.
-  useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const response = await fetch(`/api/scene?since=${versionRef.current}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(String(response.status));
-        const data = await response.json();
-        if (!stopped) {
-          if (!data.unchanged) accept(data);
-          setOffline(false);
-        }
-      } catch {
-        if (!stopped) setOffline(true);
-      }
-      if (!stopped) timer = setTimeout(poll, 1500);
-    };
-    poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [accept]);
-
-  const send = useCallback(
-    async (operation: Operation) => {
-      setError("");
-      try {
-        const response = await fetch("/api/scene", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(operation),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        accept(data);
-        return data as SceneState;
-      } catch (caught) {
-        setError((caught as Error).message || "Gagal menyimpan perubahan.");
-      }
-    },
-    [accept],
-  );
+  useShortcuts((event) => {
+    const history = historyShortcut(event);
+    if (history) {
+      send({ op: history });
+      return true;
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && state?.scene.objects.some((o) => o.id === selectedId)) {
+      send({ op: "remove", ids: [selectedId!] });
+      return true;
+    }
+    return false;
+  });
 
   const importJson = async (file: File) => {
     try {
@@ -168,6 +116,9 @@ export default function Studio() {
           <button className={buttonClass} onClick={() => send({ op: "undo" })}>
             Urungkan
           </button>
+          <button className={buttonClass} onClick={() => send({ op: "redo" })}>
+            Ulangi
+          </button>
           <button
             className={buttonClass}
             disabled={empty}
@@ -205,21 +156,9 @@ export default function Studio() {
       </section>
 
       <aside className="flex min-h-0 flex-col border-current/15 lg:w-96 lg:border-l">
-        <div className="flex border-b border-current/15" role="tablist">
-          {TABS.map(([key, label]) => (
-            <button
-              key={key}
-              role="tab"
-              aria-selected={tab === key}
-              className={`flex-1 border-b-2 py-2.5 text-sm ${tab === key ? "border-indigo-500 font-semibold" : "border-transparent opacity-60"}`}
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {error && <p className="m-3 rounded-md bg-red-500/15 p-2 text-sm text-red-500">{error}</p>}
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <Tabs label="Panel studio" tabs={TABS} active={tab} onChange={setTab} />
+        {error && <p role="alert" className="m-3 rounded-md bg-red-500/15 p-2 text-sm text-red-500">{error}</p>}
+        <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto p-3">
           {/* Panel AI tetap terpasang agar prompt dan prosesnya tidak hilang saat pindah tab. */}
           <div hidden={tab !== "ai"}>
             <AiPanel settings={settings} onResult={accept} onOpenSettings={() => setTab("settings")} />

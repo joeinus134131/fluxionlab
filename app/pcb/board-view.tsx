@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { courtyard, placedPads, type Board, type Component } from "@/lib/pcb";
 import { VIA_DRILL, VIA_SIZE, type Routing } from "@/lib/pcb-router";
+import { PIN1_DOT, silkscreen, SILK_WIDTH } from "@/lib/pcb-silk";
 
 export type Layers = { top: boolean; bottom: boolean; silk: boolean };
 
@@ -12,6 +13,8 @@ const SNAP = 0.5;
 type Props = {
   board: Board;
   routing: Routing;
+  /** Jalur masih milik papan sebelumnya. */
+  stale: boolean;
   layers: Layers;
   selected: string | null;
   onSelect: (ref: string | null) => void;
@@ -20,7 +23,7 @@ type Props = {
 
 type Drag = { ref: string; offsetX: number; offsetY: number; x: number; y: number; moved: boolean };
 
-export default function BoardView({ board, routing, layers, selected, onSelect, onMove }: Props) {
+export default function BoardView({ board, routing, stale, layers, selected, onSelect, onMove }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
 
@@ -32,6 +35,8 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
 
   const components = board.components.map((c) => (drag?.ref === c.ref ? { ...c, x: drag.x, y: drag.y } : c));
   const pads = components.flatMap(placedPads);
+  const silk = silkscreen({ ...board, components });
+  const faded = drag !== null || stale;
   const highlighted = new Set(pads.filter((pad) => pad.ref === selected).map((pad) => pad.id));
   const activeNets = new Set(
     board.nets.filter((net) => net.pins.some((pin) => highlighted.has(pin))).map((net) => net.name),
@@ -59,8 +64,8 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
                     key={i}
                     points={track.points.map((p) => `${p.x},${p.y}`).join(" ")}
                     stroke={layer === 0 ? COLORS.top : COLORS.bottom}
-                    strokeWidth={board.trackWidth}
-                    opacity={drag ? 0.2 : activeNets.size === 0 || activeNets.has(track.net) ? 0.95 : 0.3}
+                    strokeWidth={track.width}
+                    opacity={faded ? 0.2 : activeNets.size === 0 || activeNets.has(track.net) ? 0.95 : 0.3}
                   />
                 ))}
             </g>
@@ -68,7 +73,7 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
       )}
 
       {routing.vias.map((via, i) => (
-        <g key={i} opacity={drag ? 0.2 : 1}>
+        <g key={i} opacity={faded ? 0.2 : 1}>
           <circle cx={via.x} cy={via.y} r={VIA_SIZE / 2} fill="#cbd5e1" />
           <circle cx={via.x} cy={via.y} r={VIA_DRILL / 2} fill="#111" />
         </g>
@@ -87,7 +92,7 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
       ))}
 
       {/* Ratsnest: sambungan yang belum berhasil diberi jalur. */}
-      {!drag &&
+      {!faded &&
         routing.unrouted.map((missing, i) => (
           <line
             key={i}
@@ -104,7 +109,8 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
       {components.map((component, i) => {
         const box = courtyard(component);
         const active = component.ref === selected;
-        const size = Math.max(0.9, Math.min(1.6, board.width / 45));
+        const { texts, pin1 } = silk[i];
+        const color = active ? "#a5b4fc" : COLORS.silk;
         return (
           <g
             key={`${component.ref}-${i}`}
@@ -153,15 +159,20 @@ export default function BoardView({ board, routing, layers, selected, onSelect, 
               opacity={layers.silk || active ? 1 : 0}
             />
             {layers.silk && (
-              <text
-                x={(box.x1 + box.x2) / 2}
-                y={box.y1 - 0.35}
-                fontSize={size}
-                textAnchor="middle"
-                fill={active ? "#a5b4fc" : COLORS.silk}
-              >
-                {component.ref}
-              </text>
+              <g pointerEvents="none">
+                {texts.map((line, n) => (
+                  <polyline
+                    key={n}
+                    points={line.map((p) => `${p.x},${p.y}`).join(" ")}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={SILK_WIDTH}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+                {pin1 && <circle cx={pin1.x} cy={pin1.y} r={PIN1_DOT / 2} fill={color} />}
+              </g>
             )}
           </g>
         );
