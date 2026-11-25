@@ -3,13 +3,15 @@
 import { useState } from "react";
 import { EMPTY_BOARD, type BoardOperation, type BoardState, type Component } from "@/lib/pcb";
 import { productionFiles, zip } from "@/lib/pcb-export";
+import { ConversationPanel, useConversations } from "../components/conversations";
 import { historyShortcut, useDocument, useSettings, useShortcuts } from "../components/hooks";
 import { buttonClass, inputClass, Tabs } from "../components/ui";
 import { SettingsPanel } from "../studio/settings-panel";
 import { download } from "../studio/three-utils";
 import { PcbAiPanel } from "./ai-panel";
-import BoardView, { type Layers } from "./board-view";
+import type { Layers } from "./board-view";
 import { BoardSettings, CheckPanel, ComponentPanel, NetPanel, rotated } from "./info-panels";
+import PcbCanvas from "./pcb-canvas";
 import { useAnalysis } from "./use-analysis";
 
 const TABS = [
@@ -38,6 +40,15 @@ export default function PcbEditor() {
   const [tab, setTab] = useState<(typeof TABS)[number][0]>("ai");
   const [layers, setLayers] = useState<Layers>({ top: true, bottom: true, silk: true });
   const [settings, setSettings] = useSettings();
+  const conversations = useConversations("pcb", state?.version, accept);
+  const [aiBusy, setAiBusy] = useState(false);
+  // Ref seperti "R1" bisa ada di papan lain, jadi pilihan dilepas saat ganti percakapan.
+  const conversationId = conversations.view?.activeId;
+  const [shownConversation, setShownConversation] = useState(conversationId);
+  if (shownConversation !== conversationId) {
+    setShownConversation(conversationId);
+    setSelected(null);
+  }
 
   // Routing dan DRC dihitung ulang di worker saat papan berubah.
   const board = state?.board ?? EMPTY_BOARD;
@@ -125,7 +136,7 @@ export default function PcbEditor() {
           </button>
         </div>
         <div className="relative h-[60vh] min-h-0 bg-[#15171c] lg:h-auto lg:flex-1">
-          <BoardView
+          <PcbCanvas
             board={board}
             routing={routing}
             stale={pending}
@@ -216,9 +227,14 @@ export default function PcbEditor() {
         <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto p-3">
           {/* Panel AI tetap terpasang agar prompt, review, dan prosesnya tidak hilang saat pindah tab. */}
           <div hidden={tab !== "ai"}>
+            <ConversationPanel conversations={conversations} locked={aiBusy} />
+            {/* Ganti percakapan mengosongkan prompt dan lampiran. */}
             <PcbAiPanel
+              key={conversationId}
+              conversationId={conversationId}
+              onBusyChange={setAiBusy}
+              onReviewed={conversations.refresh}
               settings={settings}
-              version={state.version}
               empty={empty}
               issues={pending ? [] : analysis.issues}
               checking={pending}

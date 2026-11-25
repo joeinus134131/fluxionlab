@@ -1,5 +1,6 @@
 import { AiError, askModel, askValidated, parseJson, type Provider } from "./ai";
 import type { Attachment } from "./attachments";
+import type { Turn } from "./conversation-store";
 import { boardSchema, FOOTPRINT_GUIDE, MAX_BOARD_MM, MAX_COMPONENTS, MAX_NETS, type Board } from "./pcb";
 import { analyzeBoard } from "./pcb-analysis";
 import { log } from "./log";
@@ -57,7 +58,7 @@ const OUTPUT_SCHEMA = object({
   notes: str,
 });
 
-type Options = { provider: Provider; model: string; current: Board; signal: AbortSignal };
+type Options = { provider: Provider; model: string; current: Board; signal: AbortSignal; history?: Turn[] };
 
 function parseBoard(text: string): Board {
   const result = boardSchema.safeParse(parseJson(text));
@@ -85,12 +86,13 @@ export async function generateBoard({
   prompt,
   attachments,
   autoRepair,
+  history,
 }: Options & { prompt: string; attachments: Attachment[]; autoRepair: boolean }) {
   const message =
     current.components.length === 0
       ? prompt
       : `Current board:\n${JSON.stringify(current)}\n\nRequest: ${prompt}`;
-  const request = { system: DESIGN_SYSTEM, schema: OUTPUT_SCHEMA, message, attachments, signal };
+  const request = { system: DESIGN_SYSTEM, schema: OUTPUT_SCHEMA, message, attachments, history, signal };
   const first = await askValidated(provider, model, request, parseBoard);
   let board = first.value;
   let calls = first.calls;
@@ -122,12 +124,13 @@ export async function generateBoard({
   return { board, calls, problems: problems.length };
 }
 
-export async function reviewBoard({ provider, model, current, signal }: Options) {
+export async function reviewBoard({ provider, model, current, signal, history }: Options) {
   const findings = analyzeBoard(current).issues.map((issue) => issue.message);
   const message = `Board:\n${JSON.stringify(current)}\n\nAutomatic check results: ${JSON.stringify(findings)}`;
   const text = await askModel(provider, model, {
     system: `${REVIEW_SYSTEM}\n\n${FOOTPRINT_GUIDE}`,
     message,
+    history,
     signal,
   });
   if (!text.trim()) throw new AiError("Model tidak memberi jawaban. Coba lagi.");

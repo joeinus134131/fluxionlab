@@ -17,9 +17,11 @@ type Props = {
   settings: PublicSettings | null;
   onResult: (state: SceneState) => void;
   onOpenSettings: () => void;
+  conversationId: string | undefined;
+  onBusyChange: (busy: boolean) => void;
 };
 
-export function AiPanel({ settings, onResult, onOpenSettings }: Props) {
+export function AiPanel({ settings, onResult, onOpenSettings, conversationId, onBusyChange }: Props) {
   const model = useModelChoice(settings);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,12 +35,13 @@ export function AiPanel({ settings, onResult, onOpenSettings }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
+    onBusyChange(true);
     setMessage(null);
     try {
       const response = await fetch("/api/ai", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, attachments: sent, ...model.request }),
+        body: JSON.stringify({ prompt, attachments: sent, conversationId, ...model.request }),
         signal: controller.signal,
       });
       const data = await response.json();
@@ -55,6 +58,7 @@ export function AiPanel({ settings, onResult, onOpenSettings }: Props) {
       );
     } finally {
       setBusy(false);
+      onBusyChange(false);
     }
   };
 

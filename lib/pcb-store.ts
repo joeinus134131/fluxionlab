@@ -7,6 +7,15 @@ const toState = ({ version, value }: { version: number; value: Board }): BoardSt
 
 export const getBoardState = (): BoardState => toState(documents.get());
 
+/** Akses dokumen untuk penyimpanan percakapan. */
+export const boardDocument = {
+  get: () => documents.get().value,
+  isEmpty: () => documents.get().value.components.length === 0,
+  parse: (saved: unknown) => (saved === undefined ? EMPTY_BOARD : boardSchema.parse(saved)),
+  reset: (value: unknown) => void documents.reset(boardSchema.parse(value)),
+  state: getBoardState,
+};
+
 type Change = Exclude<BoardOperation, { op: "undo" | "redo" }>;
 
 function change(board: Board, operation: Change): Board {

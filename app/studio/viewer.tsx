@@ -3,13 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { Scene } from "@/lib/scene";
+import type { Scene, SceneObject } from "@/lib/scene";
+import { draggedPosition } from "@/lib/scene-drag";
+import { ViewButton, ViewControls } from "../components/view-controls";
 import { buildGroup, disposeGroup } from "./three-utils";
 
 type Props = {
   scene: Scene;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  /** Hasil Promise `undefined` berarti perpindahan gagal disimpan. */
+  onMove: (id: string, position: SceneObject["position"]) => Promise<unknown>;
   /** Dinaikkan setiap kali pengguna meminta tampilan dipusatkan. */
   fitRequest: number;
 };
@@ -19,17 +23,36 @@ type World = {
   group: THREE.Group | null;
   ids: Set<string>;
   fit: () => void;
+  cancelDrag: () => void;
 };
 
-export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Props) {
+type Drag = {
+  pointerId: number;
+  mesh: THREE.Object3D;
+  object: SceneObject;
+  /** Titik acuan geseran. Diperbarui saat arah seretan berganti. */
+  anchor: { position: SceneObject["position"]; point: THREE.Vector3; clientY: number };
+  position: SceneObject["position"];
+  vertical: boolean;
+  moved: boolean;
+};
+
+export default function Viewer(props: Props) {
+  const { scene, selectedId, fitRequest } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<World | null>(null);
-  const onSelectRef = useRef(onSelect);
+  const propsRef = useRef(props);
   const [failed, setFailed] = useState(false);
+  // Mode naik-turun untuk layar sentuh; di keyboard cukup tahan Shift.
+  const [lift, setLift] = useState(false);
+  const liftRef = useRef(lift);
+  // Dinaikkan untuk membangun ulang scene bila perpindahan gagal disimpan.
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
-    onSelectRef.current = onSelect;
-  }, [onSelect]);
+    propsRef.current = props;
+    liftRef.current = lift;
+  });
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -93,8 +116,6 @@ export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Prop
       sun.shadow.camera.updateProjectionMatrix();
       sun.shadow.normalBias = radius * 0.002;
     };
-    worldRef.current = { root, group: null, ids: new Set(), fit };
-
     const resize = () => {
       const { clientWidth: width, clientHeight: height } = container;
       if (!width || !height) return;
@@ -108,23 +129,125 @@ export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Prop
     observer.observe(container);
     resize();
 
-    // Klik (bukan geser kamera) untuk memilih objek.
-    let down = { x: 0, y: 0 };
-    const onPointerDown = (event: PointerEvent) => (down = { x: event.clientX, y: event.clientY });
-    const onPointerUp = (event: PointerEvent) => {
-      if (event.button !== 0 || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
-      const rect = renderer.domElement.getBoundingClientRect();
+    const canvas = renderer.domElement;
+    canvas.style.touchAction = "none";
+    const raycaster = new THREE.Raycaster();
+
+    const pick = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
       const pointer = new THREE.Vector2(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -((event.clientY - rect.top) / rect.height) * 2 + 1,
       );
-      const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(worldRef.current?.group?.children ?? [], false)[0];
-      onSelectRef.current(hit?.object.userData.id ?? null);
+      return raycaster.intersectObjects(worldRef.current?.group?.children ?? [], false)[0];
     };
-    renderer.domElement.addEventListener("pointerdown", onPointerDown);
-    renderer.domElement.addEventListener("pointerup", onPointerUp);
+
+    /** Objek yang boleh langsung diseret. Bidang (biasanya lantai) harus dipilih dulu. */
+    const draggable = (id: unknown) => {
+      const object = propsRef.current.scene.objects.find((o) => o.id === id);
+      return object && (object.type !== "plane" || object.id === propsRef.current.selectedId) ? object : undefined;
+    };
+
+    let drag: Drag | null = null;
+    const endDrag = () => {
+      if (drag && canvas.hasPointerCapture(drag.pointerId)) canvas.releasePointerCapture(drag.pointerId);
+      drag = null;
+      controls.enabled = true;
+    };
+
+    // Klik (bukan geser kamera) untuk memilih objek.
+    let down: { x: number; y: number } | null = null;
+    // Fase capture pada pembungkus berjalan sebelum OrbitControls,
+    // sehingga kamera bisa dimatikan saat yang diseret adalah objek.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target !== canvas) return;
+      down = { x: event.clientX, y: event.clientY };
+      if (event.button !== 0 || !event.isPrimary || event.ctrlKey || event.metaKey) return;
+      const hit = pick(event);
+      const object = hit && draggable(hit.object.userData.id);
+      if (!hit || !object) return;
+      controls.enabled = false;
+      canvas.setPointerCapture(event.pointerId);
+      drag = {
+        pointerId: event.pointerId,
+        mesh: hit.object,
+        object,
+        anchor: { position: object.position, point: hit.point.clone(), clientY: event.clientY },
+        position: object.position,
+        vertical: event.shiftKey || liftRef.current,
+        moved: false,
+      };
+      propsRef.current.onSelect(object.id);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!drag) {
+        const id = event.buttons ? undefined : pick(event)?.object.userData.id;
+        canvas.style.cursor = event.buttons ? "grabbing" : draggable(id) ? "move" : "grab";
+        return;
+      }
+      if (event.pointerId !== drag.pointerId || !down) return;
+      if (!drag.moved && Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 4) return;
+      pick(event);
+      const { point } = drag.anchor;
+      // Titik kursor pada bidang mendatar setinggi titik acuan.
+      const level = new THREE.Plane(new THREE.Vector3(0, 1, 0), -point.y);
+      // Sudut pandang yang hampir sejajar bidang akan melempar objek sangat jauh.
+      const flat = Math.abs(raycaster.ray.direction.y) < 0.05;
+      const onLevel = flat ? null : raycaster.ray.intersectPlane(level, new THREE.Vector3());
+
+      const vertical = event.shiftKey || liftRef.current;
+      if (vertical !== drag.vertical) {
+        // Ganti arah: mulai lagi dari posisi sekarang agar objek tidak melompat.
+        if (!vertical && !onLevel) return;
+        drag.anchor = { position: drag.position, point: vertical ? point : onLevel!, clientY: event.clientY };
+        drag.vertical = vertical;
+      }
+
+      let delta: [number, number, number];
+      if (vertical) {
+        // Dihitung dari gerak layar supaya tetap bisa dari sudut pandang mana pun.
+        const distance = camera.position.distanceTo(drag.anchor.point);
+        const perPixel = (2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / canvas.clientHeight;
+        delta = [0, (drag.anchor.clientY - event.clientY) * perPixel, 0];
+      } else {
+        if (!onLevel) return;
+        delta = [onLevel.x - drag.anchor.point.x, 0, onLevel.z - drag.anchor.point.z];
+      }
+      // Ketelitian mengikuti ukuran kisi: 0,1 untuk desain kecil, 1 atau 10 untuk desain besar.
+      drag.position = draggedPosition(drag.anchor.position, delta, grid.scale.x / 10);
+      drag.mesh.position.set(...drag.position);
+      drag.moved = true;
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      const clicked = down && Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 4;
+      down = null;
+      if (drag) {
+        if (event.pointerId !== drag.pointerId) return;
+        const { object, position, moved } = drag;
+        endDrag();
+        if (!moved || position.every((value, axis) => value === object.position[axis])) return;
+        propsRef.current.onMove(object.id, position).then((saved) => {
+          if (saved === undefined) setRevision((n) => n + 1);
+        });
+      } else if (clicked && event.button === 0) {
+        propsRef.current.onSelect(pick(event)?.object.userData.id ?? null);
+      }
+    };
+
+    const onPointerCancel = () => {
+      drag?.mesh.position.set(...drag.object.position);
+      down = null;
+      endDrag();
+    };
+
+    container.addEventListener("pointerdown", onPointerDown, true);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerCancel);
+    worldRef.current = { root, group: null, ids: new Set(), fit, cancelDrag: endDrag };
 
     renderer.setAnimationLoop(() => {
       controls.update();
@@ -134,6 +257,10 @@ export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Prop
     return () => {
       renderer.setAnimationLoop(null);
       observer.disconnect();
+      container.removeEventListener("pointerdown", onPointerDown, true);
+      canvas.removeEventListener("pointermove", onPointerMove);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerCancel);
       controls.dispose();
       if (worldRef.current?.group) disposeGroup(worldRef.current.group);
       worldRef.current = null;
@@ -145,12 +272,9 @@ export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Prop
   useEffect(() => {
     const world = worldRef.current;
     if (!world) return;
+    // Mesh lama dibuang, jadi seretan yang sedang berjalan ikut dibatalkan.
+    world.cancelDrag();
     const group = buildGroup(scene);
-    for (const child of group.children as THREE.Mesh[]) {
-      if (child.userData.id === selectedId) {
-        (child.material as THREE.MeshStandardMaterial).emissive.set("#3b4fd8");
-      }
-    }
     if (world.group) {
       world.root.remove(world.group);
       disposeGroup(world.group);
@@ -162,18 +286,34 @@ export default function Viewer({ scene, selectedId, onSelect, fitRequest }: Prop
     const replaced = scene.objects.length > 0 && !scene.objects.some((object) => world.ids.has(object.id));
     world.ids = new Set(scene.objects.map((object) => object.id));
     if (replaced) world.fit();
-  }, [scene, selectedId]);
+  }, [scene, revision]);
+
+  // Sorotan dipisah agar memilih objek tidak membangun ulang scene di tengah seretan.
+  useEffect(() => {
+    for (const child of (worldRef.current?.group?.children ?? []) as THREE.Mesh[]) {
+      (child.material as THREE.MeshStandardMaterial).emissive.set(
+        child.userData.id === selectedId ? "#3b4fd8" : "#000000",
+      );
+    }
+  }, [scene, selectedId, revision]);
 
   useEffect(() => {
     if (fitRequest > 0) worldRef.current?.fit();
   }, [fitRequest]);
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
-      {failed && (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full overflow-hidden" />
+      {failed ? (
         <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-300">
           Browser ini tidak mendukung WebGL, jadi pratinjau 3D tidak bisa ditampilkan.
         </p>
+      ) : (
+        <ViewControls hint="Seret latar: putar · Klik kanan: geser · Roda: zoom · Seret objek: pindah (Shift naik-turun)">
+          <ViewButton label="Seret objek naik-turun" pressed={lift} onClick={() => setLift(!lift)}>
+            ↕ Naik-turun
+          </ViewButton>
+        </ViewControls>
       )}
     </div>
   );

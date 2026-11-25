@@ -2,17 +2,23 @@ import { randomUUID } from "node:crypto";
 import { createDocumentStore, DocumentError } from "./document-store";
 import { MAX_OBJECTS, sceneSchema, type Operation, type Scene, type SceneState } from "./scene";
 
-const documents = createDocumentStore<Scene>({
-  name: "scene",
-  key: "scene",
-  schema: sceneSchema,
-  empty: { name: "Scene baru", objects: [] },
-});
+const EMPTY_SCENE: Scene = { name: "Scene baru", objects: [] };
+
+const documents = createDocumentStore<Scene>({ name: "scene", key: "scene", schema: sceneSchema, empty: EMPTY_SCENE });
 
 const toState = ({ version, value }: { version: number; value: Scene }): SceneState => ({ version, scene: value });
 const withId = <T extends object>(object: T) => ({ ...object, id: randomUUID().slice(0, 8) });
 
 export const getState = (): SceneState => toState(documents.get());
+
+/** Akses dokumen untuk penyimpanan percakapan. */
+export const sceneDocument = {
+  get: () => documents.get().value,
+  isEmpty: () => documents.get().value.objects.length === 0,
+  parse: (saved: unknown) => (saved === undefined ? EMPTY_SCENE : sceneSchema.parse(saved)),
+  reset: (value: unknown) => void documents.reset(sceneSchema.parse(value)),
+  state: getState,
+};
 
 function change(scene: Scene, operation: Exclude<Operation, { op: "undo" | "redo" }>): Scene {
   switch (operation.op) {

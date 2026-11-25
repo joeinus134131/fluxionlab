@@ -21,6 +21,8 @@ export type DocumentStore<T> = {
   commit(change: (current: T) => T): { version: number; value: T };
   undo(): { version: number; value: T };
   redo(): { version: number; value: T };
+  /** Ganti seluruh dokumen dan kosongkan riwayat urungkan (dipakai saat pindah percakapan). */
+  reset(value: T): { version: number; value: T };
 };
 
 export function createDocumentStore<T>(options: {
@@ -101,6 +103,9 @@ export function createDocumentStore<T>(options: {
     get() {
       const { version, value } = load();
       return { version, value };
+    },
+    reset(value) {
+      return save(load(), schema.parse(value), { past: [], future: [] });
     },
     commit(change) {
       const current = load();

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { SHAPES, type Operation, type SceneState } from "@/lib/scene";
+import { ConversationPanel, useConversations } from "../components/conversations";
 import { historyShortcut, useDocument, useSettings, useShortcuts } from "../components/hooks";
 import { buttonClass, Tabs } from "../components/ui";
 import { AiPanel } from "./ai-panel";
@@ -24,6 +25,8 @@ export default function Studio() {
   const [tab, setTab] = useState<(typeof TABS)[number][0]>("ai");
   const [fitRequest, setFitRequest] = useState(0);
   const [settings, setSettings] = useSettings();
+  const conversations = useConversations("scene", state?.version, accept);
+  const [aiBusy, setAiBusy] = useState(false);
 
   useShortcuts((event) => {
     const history = historyShortcut(event);
@@ -98,6 +101,7 @@ export default function Studio() {
         <div className="h-[60vh] min-h-0 lg:h-auto lg:flex-1">
           <Viewer
             fitRequest={fitRequest}
+            onMove={(id, position) => send({ op: "update", id, patch: { position } })}
             scene={scene}
             selectedId={selectedId}
             onSelect={(id) => {
@@ -161,7 +165,16 @@ export default function Studio() {
         <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto p-3">
           {/* Panel AI tetap terpasang agar prompt dan prosesnya tidak hilang saat pindah tab. */}
           <div hidden={tab !== "ai"}>
-            <AiPanel settings={settings} onResult={accept} onOpenSettings={() => setTab("settings")} />
+            <ConversationPanel conversations={conversations} locked={aiBusy} />
+            {/* Ganti percakapan mengosongkan prompt dan lampiran. */}
+            <AiPanel
+              key={conversations.view?.activeId}
+              settings={settings}
+              conversationId={conversations.view?.activeId}
+              onBusyChange={setAiBusy}
+              onResult={accept}
+              onOpenSettings={() => setTab("settings")}
+            />
           </div>
           {tab === "objects" && (
             <ObjectPanel scene={scene} selectedId={selectedId} onSelect={setSelectedId} send={send} />

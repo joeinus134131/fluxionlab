@@ -15,23 +15,35 @@ const EXAMPLES = [
 
 type Props = {
   settings: PublicSettings | null;
-  version: number;
   empty: boolean;
   issues: Issue[];
   /** true selama routing dan DRC untuk papan terbaru belum selesai. */
   checking: boolean;
   onResult: (state: BoardState) => void;
   onOpenSettings: () => void;
+  conversationId: string | undefined;
+  onBusyChange: (busy: boolean) => void;
+  /** Dipanggil setelah review masuk ke riwayat (review tidak mengubah versi papan). */
+  onReviewed: () => void;
 };
 
 type Task = "design" | "review" | "fix";
 
-export function PcbAiPanel({ settings, version, empty, issues, checking, onResult, onOpenSettings }: Props) {
+export function PcbAiPanel({
+  settings,
+  empty,
+  issues,
+  checking,
+  onResult,
+  onOpenSettings,
+  conversationId,
+  onBusyChange,
+  onReviewed,
+}: Props) {
   const [autoRepair, setAutoRepair] = useState(true);
   const model = useModelChoice(settings);
   const [prompt, setPrompt] = useState("");
   const [task, setTask] = useState<Task | null>(null);
-  const [review, setReview] = useState<{ text: string; version: number } | null>(null);
   const [message, setMessage] = useState<{ text: string; failed: boolean } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const attachments = useAttachments();
@@ -43,6 +55,7 @@ export function PcbAiPanel({ settings, version, empty, issues, checking, onResul
     const controller = new AbortController();
     abortRef.current = controller;
     setTask(kind);
+    onBusyChange(true);
     setMessage(null);
     try {
       const body =
@@ -54,17 +67,20 @@ export function PcbAiPanel({ settings, version, empty, issues, checking, onResul
               attachments: sent,
               // "Perbaiki masalah" sudah merupakan perbaikan, jadi cukup satu panggilan.
               autoRepair: kind === "design" && autoRepair,
+              // Riwayat menampilkan judul singkat, bukan seluruh daftar masalah.
+              label: kind === "fix" ? `Perbaiki masalah (${problems.length})` : undefined,
             };
       const response = await fetch("/api/pcb/ai", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...body, ...model.request }),
+        body: JSON.stringify({ ...body, conversationId, ...model.request }),
         signal: controller.signal,
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data) throw new Error(data?.error ?? `Server membalas ${response.status}.`);
       if (kind === "review") {
-        setReview({ text: data.review, version: data.version });
+        onReviewed();
+        setMessage({ text: "Hasil review ada di riwayat percakapan di atas.", failed: false });
         return;
       }
       onResult(data);
@@ -84,6 +100,7 @@ export function PcbAiPanel({ settings, version, empty, issues, checking, onResul
       );
     } finally {
       setTask(null);
+      onBusyChange(false);
     }
   };
 
@@ -144,13 +161,6 @@ export function PcbAiPanel({ settings, version, empty, issues, checking, onResul
         <p role="status" className={`text-sm ${message.failed ? "text-red-500" : "opacity-70"}`}>
           {message.text}
         </p>
-      )}
-      {review && (
-        <section className="rounded-md border border-current/15 p-3 text-sm">
-          <h3 className="font-semibold">Review AI</h3>
-          {review.version !== version && <p className="mt-1 text-xs text-amber-500">Papan sudah berubah sejak review ini.</p>}
-          <p className="mt-2 whitespace-pre-wrap">{review.text}</p>
-        </section>
       )}
       <div className="space-y-2 pt-2">
         <p className="text-xs opacity-60">Contoh</p>

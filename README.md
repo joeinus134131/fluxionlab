@@ -24,8 +24,16 @@ Server hanya menerima koneksi dari komputer ini (`127.0.0.1:3000`). Isi API key 
 
 ## Fitur
 
+### Percakapan (3D dan PCB)
+- Daftar percakapan terpisah untuk 3D dan PCB, di tab **AI**: buat baru, pindah, ganti nama, hapus. Judul diambil dari prompt pertama.
+- Tiap percakapan punya riwayat chat **dan desainnya sendiri**. Pindah percakapan ikut mengganti desain di layar, dan riwayat urungkan/ulangi dikosongkan.
+- AI menerima paling banyak 20 pesan terakhir dari percakapan aktif, termasuk lampiran lama (yang terbaru didahulukan, dalam batas satu permintaan). Riwayat yang lebih panjang menambah pemakaian token.
+- Hanya permintaan yang berhasil yang dicatat. Percakapan tidak bisa diganti dari panel selagi AI bekerja.
+- MCP dan REST selalu bekerja pada desain percakapan yang sedang aktif.
+
 ### Desain 3D (`/studio`)
 - Buat dan revisi scene dari tulisan, gambar, PDF, atau file teks.
+- Seret objek langsung di canvas untuk memindahkan secara mendatar; tahan `Shift` (atau tombol Naik-turun) untuk mengubah tinggi. Bidang datar harus dipilih dulu sebelum bisa diseret.
 - Edit manual, duplikat, urungkan/ulangi. Pintasan: `Delete`, `⌘/Ctrl+Z`, tambah `Shift` untuk ulangi.
 - Ekspor GLB, OBJ, STL, JSON. STL: sumbu Z ke atas, titik terendah di Z=0, 1 satuan = 1 mm, `plane` dilewati.
 
@@ -36,6 +44,8 @@ Server hanya menerima koneksi dari komputer ini (`127.0.0.1:3000`). Isi API key 
 - Autorouter dua lapis dengan lebar jalur per net, dijalankan di Web Worker.
 - DRC geometris yang terpisah dari router: korsleting, jarak tembaga, jarak ke tepi, net terputus.
 - Ekspor ZIP: Gerber (tembaga, mask, silkscreen dengan teks dan penanda pin 1, garis papan), bor Excellon, BOM, posisi komponen, ringkasan fabrikasi.
+- Canvas 2D: seret latar untuk geser, roda/cubit untuk zoom, putar tampilan per 90° (tidak mengubah desain), seret komponen untuk memindahkan.
+- Canvas 3D: seret untuk memutar, klik kanan untuk geser, roda untuk zoom, seret komponen untuk memindahkan, plus posisi Miring/Atas/Bawah. Bentuk komponen hanya ilustrasi.
 - Pintasan: `R` putar, `Delete` hapus, panah geser 0,5 mm (`Shift` 2,54 mm), urungkan/ulangi.
 
 ## Integrasi
@@ -55,9 +65,9 @@ claude mcp add --transport http fluxion3d http://localhost:3000/api/mcp
 
 ## Data dan keamanan
 
-- Semua data ada di `.data/` (tidak masuk git, file berizin 600): `scene.json`, `pcb.json`, riwayatnya, dan `settings.json`. Penulisan bersifat atomik; file rusak dipindahkan ke `*.rusak-*`, tidak ditimpa. Cadangkan folder ini bila desainnya penting.
+- Semua data ada di `.data/` (tidak masuk git, file berizin 600): `scene.json`, `pcb.json`, riwayatnya, `settings.json`, riwayat chat (`conversations-*.json`), dan lampiran yang pernah dikirim (`attachments/`, terhapus bersama percakapannya). Penulisan bersifat atomik; file rusak dipindahkan ke `*.rusak-*`, tidak ditimpa. Cadangkan folder ini bila desainnya penting.
 - **API key disimpan sebagai teks biasa** di `.data/settings.json`. Kunci tidak dikirim balik ke browser dan disensor dari pesan galat.
-- API menolak permintaan lintas situs dan host non-lokal. `FLUXION_API_TOKEN` (di `.env.local`) mengizinkan akses scene/PCB/MCP dengan `Authorization: Bearer …`; pengaturan selalu hanya lokal.
+- API menolak permintaan lintas situs dan host non-lokal. `FLUXION_API_TOKEN` (di `.env.local`) mengizinkan akses scene/PCB/MCP dengan `Authorization: Bearer …`; pengaturan dan riwayat percakapan selalu hanya lokal.
 - Ukuran badan permintaan dibatasi, paling banyak 2 permintaan AI bersamaan, batas waktu AI 280 detik, pengalihan dari penyedia model ditolak, dan header keamanan (termasuk CSP) dipasang.
 - Log server berupa satu baris JSON per kejadian, termasuk pemakaian token, tanpa kunci, prompt, atau lampiran.
 
@@ -79,4 +89,4 @@ Cek di aplikasi tidak menilai benar tidaknya rangkaian. Cocokkan pinout dan nila
 
 - PCB: komponen hanya di lapisan atas; footprint terbatas pada pustaka; tanpa copper pour, editor jalur manual, ERC, simulasi, atau impor/ekspor KiCad. Router bisa gagal pada papan padat (dilaporkan sebagai "belum tersambung").
 - 3D: bentuk masih primitif; belum ada operasi boolean. Bentuk bertumpuk tidak digabung saat ekspor STL.
-- Satu scene dan satu papan aktif.
+- Hanya satu percakapan aktif per bagian (3D dan PCB); semua tab browser, MCP, dan REST berbagi yang aktif itu. Paling banyak 50 percakapan per bagian dan 200 pesan per percakapan.
